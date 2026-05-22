@@ -1,0 +1,57 @@
+name: Promote to latest
+
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Promote versions older than 7 days to latest
+        run: |
+          PKG="opencode-cursor-proxy"
+          npm view "$PKG" time --json 2>/dev/null | node -e "
+          const pkg = process.argv[1];
+          let data = '';
+          process.stdin.on('data', c => data += c);
+          process.stdin.on('end', () => {
+            const times = JSON.parse(data);
+            const now = Math.floor(Date.now() / 1000);
+            const threshold = now - 7*24*3600;
+            const candidates = [];
+
+            for (const [ver, date] of Object.entries(times)) {
+              if (ver === 'created' || ver === 'modified') continue;
+              const pub = new Date(date).getTime() / 1000;
+              if (pub <= threshold) candidates.push(ver);
+            }
+
+            if (candidates.length === 0) {
+              console.log('No versions eligible for promotion');
+              process.exit(0);
+            }
+
+            for (const ver of candidates) {
+              try {
+                const execSync = require('child_process').execSync;
+                execSync('npm dist-tag add ' + pkg + '@' + ver + ' latest', {
+                  stdio: 'inherit',
+                  env: { ...process.env }
+                });
+                console.log('Promoted ' + pkg + '@' + ver + ' to latest');
+              } catch (e) {
+                console.error('Failed to promote ' + ver + ': ' + e.message);
+              }
+            }
+          });
+          " "$PKG"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

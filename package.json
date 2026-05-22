@@ -1,0 +1,43 @@
+{
+  "name": "opencode-cursor-proxy",
+  "version": "1.0.0",
+  "description": "OpenCode plugin: transparent Cursor agent proxy with OpenAI-compatible API. Starts a local HTTP server that translates OpenAI chat completions into cursor-agent CLI calls, and injects cursor-acp provider config into OpenCode.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": {
+      "import": "./src/index.js",
+      "types": "./src/index.d.ts"
+    }
+  },
+  "keywords": [
+    "opencode",
+    "cursor",
+    "cursor-agent",
+    "proxy",
+    "plugin",
+    "openai-compatible"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "opencode-cursor-proxy contributors"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anomalyco/opencode-cursor-proxy.git"
+  },
+  "homepage": "https://github.com/anomalyco/opencode-cursor-proxy#readme",
+  "bugs": {
+    "url": "https://github.com/anomalyco/opencode-cursor-proxy/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "src/"
+  ]
+}
