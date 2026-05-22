@@ -1,5 +1,7 @@
 # opencode-cursor-agent-proxy
 
+[![npm version](https://img.shields.io/npm/v/opencode-cursor-agent-proxy?label=version&logo=npm)](https://www.npmjs.com/package/opencode-cursor-agent-proxy)
+
 OpenCode plugin that transparently proxies LLM calls through Cursor's `cursor-agent` CLI.
 
 ## How it works
