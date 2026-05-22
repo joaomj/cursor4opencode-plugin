@@ -1,4 +1,4 @@
-# opencode-cursor-proxy
+# opencode-cursor-agent-proxy
 
 OpenCode plugin that transparently proxies LLM calls through Cursor's `cursor-agent` CLI.
 
@@ -15,7 +15,7 @@ No MCP bridging, no tool-loop interception — just a thin HTTP server.
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-cursor-proxy"]
+  "plugin": ["opencode-cursor-agent-proxy"]
 }
 ```
 
@@ -26,7 +26,7 @@ OpenCode will install and load it automatically at startup.
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["./path/to/opencode-cursor-proxy"]
+  "plugin": ["./path/to/opencode-cursor-agent-proxy"]
 }
 ```
 
@@ -68,7 +68,7 @@ This plugin employs several measures to protect users from supply chain attacks:
 **npm provenance.** Every release is published to npm with [Sigstore](https://www.sigstore.dev/) provenance attestation. Users can verify the package was built and published from this repository's GitHub Actions CI:
 
 ```bash
-npm audit signatures --package opencode-cursor-proxy
+npm audit signatures --package opencode-cursor-agent-proxy
 ```
 
 **Delayed rollout.** New versions are published to the `next` dist-tag first. A 7-day quarantine period must elapse before automatic promotion to `latest`. This provides a window to catch malicious or defective releases before they reach the default install path.
@@ -76,7 +76,7 @@ npm audit signatures --package opencode-cursor-proxy
 **Verification.** To install a specific trusted version, pin the version explicitly:
 
 ```json
-{ "plugin": ["opencode-cursor-proxy@1.0.0"] }
+{ "plugin": ["opencode-cursor-agent-proxy@1.0.0"] }
 ```
 
 ## Requirements
@@ -87,4 +87,4 @@ npm audit signatures --package opencode-cursor-proxy
 
 ## License
 
-MIT
+[MIT](LICENSE)

@@ -17,7 +17,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Promote versions older than 7 days to latest
         run: |
-          PKG="opencode-cursor-proxy"
+          PKG="opencode-cursor-agent-proxy"
           npm view "$PKG" time --json 2>/dev/null | node -e "
           const pkg = process.argv[1];
           let data = '';
