@@ -3,6 +3,13 @@ name: Publish
 on:
   schedule:
     - cron: "0 0 1 * *"
+  workflow_dispatch:
+    inputs:
+      provenance:
+        description: Publish with npm provenance
+        type: boolean
+        default: true
+        required: false
 
 jobs:
   verify:
