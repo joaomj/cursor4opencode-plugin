@@ -5,6 +5,11 @@ on:
     - cron: "0 0 1 * *"
   workflow_dispatch:
     inputs:
+      otp:
+        description: npm OTP code (required if 2FA enabled)
+        type: string
+        required: false
+        default: ""
       provenance:
         description: Publish with npm provenance
         type: boolean
@@ -33,7 +38,10 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-      - run: npm publish --provenance --tag next --access public
+      - run: |
+          OTP_FLAG=""
+          [ -n "${{ inputs.otp }}" ] && OTP_FLAG="--otp=${{ inputs.otp }}"
+          npm publish --provenance --tag next --access public $OTP_FLAG
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - run: |
