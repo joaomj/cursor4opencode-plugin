@@ -19,8 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node -e "require('./src/index.js')" --check
-      - run: node -e "require('./src/cursor-proxy.cjs')" --check
+      - run: node --check src/index.js
 
   publish:
     needs: [verify]

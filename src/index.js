@@ -1,215 +1,181 @@
-import { spawn } from "node:child_process";
-import { createServer } from "node:net";
-import { request as httpRequest } from "node:http";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { Agent } from "@cursor/sdk";
+import { tool } from "@opencode-ai/plugin";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROXY_SCRIPT = join(__dirname, "cursor-proxy.cjs");
+const agents = new Map();
 
-let child = null;
-
-/** Returns true if something is already listening on the given TCP port. */
-function isPortOccupied(port) {
-  return new Promise((resolve) => {
-    const probe = createServer();
-    probe.once("error", () => resolve(true));
-    probe.once("listening", () => {
-      probe.close();
-      resolve(false);
-    });
-    probe.listen(port, "127.0.0.1");
-  });
+function modelSelection(model, thinking) {
+  if (!thinking) return { id: model };
+  return { id: model, params: [{ id: "thinking", value: thinking }] };
 }
 
-/** Returns true if a healthy cursor-proxy is responding on the given port. */
-function isProxyHealthy(port) {
-  return new Promise((resolve) => {
-    const req = httpRequest(
-      { host: "127.0.0.1", port, path: "/health", timeout: 2_000 },
-      (res) => {
-        resolve(res.statusCode === 200);
-      }
-    );
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => { req.destroy(); resolve(false); });
-    req.end();
-  });
+function agentKey({ runtime, cwd, model, mode, thinking, repoUrl }) {
+  return [runtime, cwd, repoUrl || "", model, mode, thinking || ""].join("\0");
 }
 
-export default async function cursorProxyPlugin() {
-  const port = parseInt(process.env.CURSOR_PROXY_PORT || "32124", 10);
-  const cursorBin = process.env.CURSOR_AGENT_BIN || "cursor-agent";
-  const workspace = process.env.CURSOR_WORKSPACE || process.cwd();
+async function getCursorAgent(args) {
+  const apiKey = args.apiKey || process.env.CURSOR_API_KEY;
+  const model = modelSelection(args.model, args.thinking);
 
-  // Fix 2: don't spawn a second proxy if one is already running on the port.
-  // This prevents EADDRINUSE crashes when OpenCode restarts while the daemon
-  // proxy (cursor-proxy-start.sh) is still alive.
-  const occupied = await isPortOccupied(port);
-  if (occupied) {
-    const healthy = await isProxyHealthy(port);
-    if (healthy) {
-      console.log(`[cursor-proxy] port ${port} already has a healthy proxy — skipping spawn`);
-    } else {
-      console.warn(
-        `[cursor-proxy] port ${port} is occupied by an unhealthy or unknown process — skipping spawn`
-      );
-    }
-  } else {
-    child = spawn("node", [PROXY_SCRIPT], {
-      env: {
-        ...process.env,
-        PORT: String(port),
-        CURSOR_AGENT_BIN: cursorBin,
-        CURSOR_WORKSPACE: workspace,
-      },
-      stdio: ["ignore", "inherit", "inherit"],
-    });
-
-    child.on("error", (err) => {
-      console.error(`[cursor-proxy] Failed to start: ${err.message}`);
-    });
-
-    child.on("exit", (code, signal) => {
-      if (code !== 0 && signal === null) {
-        console.error(`[cursor-proxy] Exited with code ${code}`);
-      }
-      child = null;
-    });
+  if (args.agentId) {
+    return Agent.resume(args.agentId, { apiKey, model });
   }
 
-  // Fix 2: graceful shutdown — wait up to 10 s for in-flight requests to drain
-  // before killing the proxy process.
-  const kill = () => {
-    if (!child) return;
-    const proc = child;
-    child = null;
+  const key = agentKey(args);
+  const existing = agents.get(key);
+  if (existing) return existing;
 
-    const doKill = () => {
-      proc.kill("SIGTERM");
-      setTimeout(() => proc.kill("SIGKILL"), 3_000);
-    };
-
-    // If the proxy exposed its drain hook, wait for it
-    if (proc.pid) {
-      let settled = false;
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        doKill();
-      };
-      // Give in-flight requests up to 10 s to complete
-      const drainTimeout = setTimeout(settle, 10_000);
-      // Try to reach the drain callback via the health endpoint
-      httpRequest(
-        { host: "127.0.0.1", port, path: "/health", timeout: 1_000 },
-        (res) => {
-          let body = "";
-          res.on("data", (c) => (body += c));
-          res.on("end", () => {
-            try {
-              const { inflight } = JSON.parse(body);
-              if (inflight === 0) {
-                clearTimeout(drainTimeout);
-                settle();
-              } else {
-                // Poll until inflight reaches 0 or timeout fires
-                const poll = setInterval(async () => {
-                  if (settled) { clearInterval(poll); return; }
-                  const h = httpRequest(
-                    { host: "127.0.0.1", port, path: "/health", timeout: 1_000 },
-                    (r) => {
-                      let b = "";
-                      r.on("data", (c) => (b += c));
-                      r.on("end", () => {
-                        try {
-                          const { inflight: inf } = JSON.parse(b);
-                          if (inf === 0) {
-                            clearTimeout(drainTimeout);
-                            clearInterval(poll);
-                            settle();
-                          }
-                        } catch { /* ignore */ }
-                      });
-                    }
-                  );
-                  h.on("error", () => {});
-                  h.end();
-                }, 500);
-              }
-            } catch {
-              clearTimeout(drainTimeout);
-              settle();
-            }
-          });
-        }
-      ).on("error", () => { doKill(); }).end();
-    } else {
-      doKill();
-    }
+  const options = {
+    apiKey,
+    model,
+    mode: args.mode,
   };
 
-  process.on("exit", kill);
-  process.on("SIGINT", kill);
-  process.on("SIGTERM", kill);
+  if (args.runtime === "cloud") {
+    if (!args.repoUrl) {
+      throw new Error("cursor_delegate runtime=cloud requires repoUrl");
+    }
+    options.cloud = {
+      repos: [{ url: args.repoUrl, startingRef: args.startingRef }],
+      autoCreatePR: Boolean(args.autoCreatePR),
+    };
+  } else {
+    options.local = {
+      cwd: args.cwd,
+      sandboxOptions: { enabled: Boolean(args.sandbox) },
+    };
+  }
+
+  const agent = await Agent.create(options);
+  agents.set(key, agent);
+  return agent;
+}
+
+function readTextBlock(block) {
+  if (!block || block.type !== "text") return "";
+  return block.text || "";
+}
+
+function formatToolArgs(value) {
+  if (value == null) return "";
+  try {
+    const text = JSON.stringify(value);
+    return text.length > 600 ? `${text.slice(0, 600)}...` : text;
+  } catch {
+    return String(value);
+  }
+}
+
+async function runCursorDelegate(input, context) {
+  const cwd = input.cwd || context.worktree || context.directory || process.cwd();
+  const args = {
+    prompt: input.prompt,
+    runtime: input.runtime || "local",
+    mode: input.mode || "agent",
+    model: input.model || "composer-2.5",
+    thinking: input.thinking,
+    cwd,
+    repoUrl: input.repoUrl,
+    startingRef: input.startingRef,
+    autoCreatePR: input.autoCreatePR,
+    sandbox: input.sandbox,
+    apiKey: input.apiKey,
+    agentId: input.agentId,
+  };
+
+  const agent = await getCursorAgent(args);
+  const sendOptions = { mode: args.mode };
+  if (args.model || args.thinking) sendOptions.model = modelSelection(args.model, args.thinking);
+
+  const run = await agent.send(args.prompt, sendOptions);
+  const events = [];
+  let assistantText = "";
+
+  for await (const message of run.stream()) {
+    if (message.type === "assistant") {
+      const text = (message.message?.content || []).map(readTextBlock).join("");
+      if (text) {
+        assistantText += text;
+        events.push(`assistant: ${text.trim()}`);
+      }
+    } else if (message.type === "thinking") {
+      if (message.text) events.push(`thinking: ${message.text.trim()}`);
+    } else if (message.type === "tool_call") {
+      const detail = message.status === "running" ? formatToolArgs(message.args) : formatToolArgs(message.result);
+      events.push(`tool_call ${message.name || message.call_id}: ${message.status}${detail ? ` ${detail}` : ""}`);
+    } else if (message.type === "status") {
+      events.push(`status: ${message.status}${message.message ? ` ${message.message}` : ""}`);
+    } else if (message.type === "task") {
+      events.push(`task: ${message.status || "update"}${message.text ? ` ${message.text}` : ""}`);
+    } else if (message.type === "request") {
+      events.push(`request: ${message.request_id}`);
+    }
+  }
+
+  const result = await run.wait();
+  const finalText = result.result || run.result || assistantText;
+
+  return [
+    "Cursor Agent Delegation",
+    `Model: ${args.model}${args.thinking ? ` (${args.thinking})` : ""}`,
+    `Runtime: ${args.runtime}`,
+    `Mode: ${args.mode}`,
+    `Agent ID: ${agent.agentId || agent.agent_id || run.agentId || run.agent_id || "unknown"}`,
+    `Run ID: ${run.id || "unknown"}`,
+    `Status: ${result.status || run.status || "unknown"}`,
+    "",
+    "Events:",
+    events.length ? events.map((event) => `- ${event}`).join("\n") : "- No stream events captured.",
+    "",
+    "Final:",
+    finalText || "No final text returned.",
+  ].join("\n");
+}
+
+async function closeAgents() {
+  for (const agent of agents.values()) {
+    try {
+      await agent.close?.();
+    } catch {
+      // Ignore close failures during process shutdown.
+    }
+  }
+  agents.clear();
+}
+
+function registerShutdown() {
+  const shutdown = () => {
+    void closeAgents();
+  };
+  process.once("exit", shutdown);
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}
+
+export default async function cursorAgentPlugin() {
+  registerShutdown();
 
   return {
-    config: (cfg) => {
-      cfg.provider = cfg.provider || {};
-      cfg.provider["cursor-acp"] = {
-        name: "Cursor ACP",
-        npm: "@ai-sdk/openai-compatible",
-        options: { baseURL: `http://127.0.0.1:${port}/v1` },
-        models: {
-          "composer-2.5": {
-            name: "Composer 2.5",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "claude-4.6-opus-high": {
-            name: "Opus 4.6 High",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "claude-4.6-opus-max": {
-            name: "Opus 4.6 Max",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "claude-4.6-opus-max-thinking": {
-            name: "Opus 4.6 Max Thinking",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "claude-4.6-sonnet-medium": {
-            name: "Sonnet 4.6 Medium",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "claude-4.6-sonnet-medium-thinking": {
-            name: "Sonnet 4.6 Medium Thinking",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "gpt-5.5-none": {
-            name: "GPT 5.5 None",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "gpt-5.5-low": {
-            name: "GPT 5.5 Low",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "gpt-5.5-medium": {
-            name: "GPT 5.5 Medium",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "gpt-5.5-high": {
-            name: "GPT 5.5 High",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
-          "gpt-5.5-extra-high": {
-            name: "GPT 5.5 Extra High",
-            limit: { context: 200000, input: 200000, output: 64000 },
-          },
+    tool: {
+      cursor_delegate: tool({
+        description:
+          "Delegate a coding task to Cursor Agent using Cursor Composer or another Cursor model. Use when the user explicitly asks to use Cursor, Composer, or Cursor Agent for implementation, investigation, or planning.",
+        args: {
+          prompt: tool.schema.string().describe("Task prompt to send to Cursor Agent."),
+          model: tool.schema.string().optional().describe("Cursor model id. Defaults to composer-2.5."),
+          thinking: tool.schema.enum(["low", "high"]).optional().describe("Composer thinking level, when supported."),
+          mode: tool.schema.enum(["agent", "plan"]).optional().describe("Cursor mode. Defaults to agent."),
+          runtime: tool.schema.enum(["local", "cloud"]).optional().describe("Cursor runtime. Defaults to local."),
+          cwd: tool.schema.string().optional().describe("Local workspace directory. Defaults to the opencode worktree."),
+          sandbox: tool.schema.boolean().optional().describe("Enable Cursor local sandbox when supported."),
+          agentId: tool.schema.string().optional().describe("Existing Cursor agent id to resume."),
+          repoUrl: tool.schema.string().optional().describe("Cloud runtime repository URL."),
+          startingRef: tool.schema.string().optional().describe("Cloud runtime starting ref."),
+          autoCreatePR: tool.schema.boolean().optional().describe("Whether cloud runtime should create a PR."),
         },
-      };
-
-      if (!cfg.model) cfg.model = "cursor-acp/composer-2.5";
-      if (!cfg.small_model) cfg.small_model = "cursor-acp/gpt-5.5-low";
+        async execute(args, context) {
+          return runCursorDelegate(args, context);
+        },
+      }),
     },
   };
 }

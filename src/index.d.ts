@@ -1,5 +1,5 @@
-declare const cursorProxyPlugin: () => Promise<{
-  config: (cfg: Record<string, unknown>) => void;
+declare const cursorAgentPlugin: () => Promise<{
+  tool: Record<string, unknown>;
 }>;
 
-export default cursorProxyPlugin;
+export default cursorAgentPlugin;
